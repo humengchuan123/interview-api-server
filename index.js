@@ -16,56 +16,57 @@ async function initDB() {
       connectionString: process.env.DATABASE_URL,
       ssl: { rejectUnauthorized: false },
     });
+
+    pool.on('error', (err) => {
+      console.error('❌ Unexpected pool error:', err.message);
+    });
+
+    const client = await pool.connect();
+    try {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS stores (
+          id TEXT PRIMARY KEY, name TEXT NOT NULL, code TEXT NOT NULL UNIQUE,
+          address TEXT, created_at TIMESTAMPTZ DEFAULT NOW()
+        )
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS tasks (
+          id TEXT PRIMARY KEY, name TEXT NOT NULL, required_count INTEGER NOT NULL,
+          store_id TEXT NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+          status TEXT NOT NULL DEFAULT 'pending', created_at TIMESTAMPTZ DEFAULT NOW()
+        )
+      `);
+ await client.query(`
+        CREATE TABLE IF NOT EXISTS submissions (
+          id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+          actual_count INTEGER NOT NULL, result TEXT NOT NULL,
+          submitted_at TIMESTAMPTZ DEFAULT NOW()
+        )
+      `);
+
+      const { rows } = await client.query('SELECT COUNT(*)::int as count FROM stores');
+      if (rows[0].count === 0) {
+        await client.query(`
+          INSERT INTO stores (id, name, code, address) VALUES
+            ('store-1', '北京朝阳店', 'BJ-CY-001', '北京市朝阳区建国路88号'),
+            ('store-2', '上海浦东店', 'SH-PD-001', '上海市浦东新区陆家嘴环路100号'),
+            ('store-3', '广州天河店', 'GZ-TH-001', '广州市天河区体育西路50号'),
+            ('store-4', '深圳南山店', 'SZ-NS-001', '深圳市南山区科技园路20号')
+        `);
+      }
+    } finally {
+      client.release();
+    }
+
     const adapter = new PostgresAdapter(pool);
     app.locals.db = adapter;
-
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS stores (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        code TEXT NOT NULL UNIQUE,
-        address TEXT,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `);
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS tasks (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        required_count INTEGER NOT NULL,
-        store_id TEXT NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
-        status TEXT NOT NULL DEFAULT 'pending',
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `);
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS submissions (
-        id TEXT PRIMARY KEY,
-        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-        actual_count INTEGER NOT NULL,
-        result TEXT NOT NULL,
-        submitted_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `);
-
-    const { rows } = await pool.query('SELECT COUNT(*)::int as count FROM stores');
-    if (rows[0].count === 0) {
-      await pool.query(`
-        INSERT INTO stores (id, name, code, address) VALUES
-          ('store-1', '北京朝阳店', 'BJ-CY-001', '北京市朝阳区建国路88号'),
-          ('store-2', '上海浦东店', 'SH-PD-001', '上海市浦东新区陆家嘴环路100号'),
-          ('store-3', '广州天河店', 'GZ-TH-001', '广州市天河区体育西路50号'),
-          ('store-4', '深圳南山店', 'SZ-NS-001', '深圳市南山区科技园路20号')
-      `);
-    }
+    console.log('✅ Supabase Postgres connected');
   } else {
     const Database = require('better-sqlite3');
     const dbPath = path.join(__dirname, 'data.db');
     const db = new Database(dbPath);
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
-    const adapter = new SqliteAdapter(db);
-    app.locals.db = adapter;
 
     db.exec(`
       CREATE TABLE IF NOT EXISTS stores (
@@ -95,18 +96,33 @@ async function initDB() {
         ['store-4', '深圳南山店', 'SZ-NS-001', '深圳市南山区科技园路20号'],
       ]);
     }
+
+    const adapter = new SqliteAdapter(db);
+    app.locals.db = adapter;
+    console.log('✅ SQLite connected');
   }
 }
 
 let dbReady = false;
-const initPromise = initDB().then(() => { dbReady = true; }).catch((err) => {
-  console.error('❌ DB init error:', err.message);
-});
+let dbError = null;
+
+const initPromise = initDB()
+  .then(() => { dbReady = true; })
+  .catch((err) => {
+    dbError = err;
+    console.error('❌ DB init error:', err.message);
+  });
 
 app.use(async (req, res, next) => {
   if (!dbReady) {
-    try { await initPromise; } catch {
-      return res.status(503).json({ code: 'DB_INIT_FAILED', message: '数据库初始化失败' });
+    await initPromise;
+    if (dbError) {
+      return res.status(503).json({
+        code: 'DB_INIT_FAILED',
+        message: '数据库初始化失败',
+        detail: dbError.message,
+        env: isPostgres ? 'DATABASE_URL is set' : 'DATABASE_URL is NOT set',
+      });
     }
   }
   next();
@@ -118,10 +134,15 @@ app.use('/api/submissions', require('./routes/submissions'));
 
 app.get('/health', async (req, res) => {
   try {
-    await req.app.locals.db.get('SELECT 1');
+    const result = await req.app.locals.db.get('SELECT 1 as ok');
     res.json({ status: 'ok', timestamp: new Date().toISOString(), db: isPostgres ? 'supabase' : 'sqlite' });
-  } catch {
-    res.status(503).json({ status: 'error', message: 'Database not connected' });
+  } catch (err) {
+    res.status(503).json({
+      status: 'error',
+      message: 'Database not connected',
+      detail: err.message,
+      env: isPostgres ? 'DATABASE_URL is set' : 'DATABASE_URL is NOT set',
+    });
   }
 });
 
