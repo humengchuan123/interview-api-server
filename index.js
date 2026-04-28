@@ -77,6 +77,20 @@ async function initDB() {
   }
 }
 
+let dbReady = false;
+const initPromise = initDB().then(() => { dbReady = true; }).catch((err) => {
+  console.error('❌ DB init error:', err.message);
+});
+
+app.use(async (req, res, next) => {
+  if (!dbReady) {
+    try { await initPromise; } catch {
+      return res.status(503).json({ code: 'DB_INIT_FAILED', message: '数据库初始化失败' });
+    }
+  }
+  next();
+});
+
 app.use('/api/stores', require('./routes/stores'));
 app.use('/api/tasks', require('./routes/tasks'));
 app.use('/api/submissions', require('./routes/submissions'));
@@ -110,6 +124,7 @@ if (require.main === module) {
   const PORT = process.env.PORT || 3000;
   initDB()
     .then(() => {
+      dbReady = true;
       app.listen(PORT, () => {
         console.log(`✅ Server running on http://localhost:${PORT}`);
         console.log(`📦 Database: ${isPostgres ? '🐘 Vercel Postgres' : '💾 SQLite (local)'}`);
