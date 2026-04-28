@@ -7,36 +7,56 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const isPostgres = !!process.env.POSTGRES_URL;
+const isPostgres = !!process.env.DATABASE_URL;
 
 async function initDB() {
   if (isPostgres) {
-    const { sql, Pool } = require('@vercel/postgres');
-    const pool = new Pool();
+    const { Pool } = require('pg');
+    const pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+    });
     const adapter = new PostgresAdapter(pool);
     app.locals.db = adapter;
 
-    await sql`CREATE TABLE IF NOT EXISTS stores (
-      id TEXT PRIMARY KEY, name TEXT NOT NULL, code TEXT NOT NULL UNIQUE,
-      address TEXT, created_at TIMESTAMPTZ DEFAULT NOW()
-    )`;
-    await sql`CREATE TABLE IF NOT EXISTS tasks (
-      id TEXT PRIMARY KEY, name TEXT NOT NULL, required_count INTEGER NOT NULL,
-      store_id TEXT NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
-      status TEXT NOT NULL DEFAULT 'pending', created_at TIMESTAMPTZ DEFAULT NOW()
-    )`;
-    await sql`CREATE TABLE IF NOT EXISTS submissions (
-      id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-      actual_count INTEGER NOT NULL, result TEXT NOT NULL, submitted_at TIMESTAMPTZ DEFAULT NOW()
-    )`;
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS stores (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        code TEXT NOT NULL UNIQUE,
+        address TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS tasks (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        required_count INTEGER NOT NULL,
+        store_id TEXT NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS submissions (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        actual_count INTEGER NOT NULL,
+        result TEXT NOT NULL,
+        submitted_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
 
-    const { rows } = await sql`SELECT COUNT(*)::int as count FROM stores`;
+    const { rows } = await pool.query('SELECT COUNT(*)::int as count FROM stores');
     if (rows[0].count === 0) {
-      await sql`INSERT INTO stores (id, name, code, address) VALUES
-        ('store-1', '北京朝阳店', 'BJ-CY-001', '北京市朝阳区建国路88号'),
-        ('store-2', '上海浦东店', 'SH-PD-001', '上海市浦东新区陆家嘴环路100号'),
-        ('store-3', '广州天河店', 'GZ-TH-001', '广州市天河区体育西路50号'),
-        ('store-4', '深圳南山店', 'SZ-NS-001', '深圳市南山区科技园路20号')`;
+      await pool.query(`
+        INSERT INTO stores (id, name, code, address) VALUES
+          ('store-1', '北京朝阳店', 'BJ-CY-001', '北京市朝阳区建国路88号'),
+          ('store-2', '上海浦东店', 'SH-PD-001', '上海市浦东新区陆家嘴环路100号'),
+          ('store-3', '广州天河店', 'GZ-TH-001', '广州市天河区体育西路50号'),
+          ('store-4', '深圳南山店', 'SZ-NS-001', '深圳市南山区科技园路20号')
+      `);
     }
   } else {
     const Database = require('better-sqlite3');
@@ -99,7 +119,7 @@ app.use('/api/submissions', require('./routes/submissions'));
 app.get('/health', async (req, res) => {
   try {
     await req.app.locals.db.get('SELECT 1');
-    res.json({ status: 'ok', timestamp: new Date().toISOString(), db: isPostgres ? 'postgres' : 'sqlite' });
+    res.json({ status: 'ok', timestamp: new Date().toISOString(), db: isPostgres ? 'supabase' : 'sqlite' });
   } catch {
     res.status(503).json({ status: 'error', message: 'Database not connected' });
   }
@@ -128,7 +148,7 @@ if (require.main === module) {
       dbReady = true;
       app.listen(PORT, () => {
         console.log(`✅ Server running on http://localhost:${PORT}`);
-        console.log(`📦 Database: ${isPostgres ? '🐘 Vercel Postgres' : '💾 SQLite (local)'}`);
+        console.log(`📦 Database: ${isPostgres ? '🐘 Supabase Postgres' : '💾 SQLite (local)'}`);
       });
     })
     .catch((err) => {
