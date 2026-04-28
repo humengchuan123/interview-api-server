@@ -47,9 +47,13 @@ async function initDB() {
   }
 }
 
+const initPromise = initDB().catch((err) => {
+  console.error('❌ DB init failed:', err.message);
+});
+
 if (require.main === module) {
   const PORT = process.env.PORT || 3000;
-  initDB()
+  initPromise
     .then(() => {
       app.listen(PORT, () => {
         console.log(`✅ Server running on http://localhost:${PORT}`);
@@ -61,6 +65,11 @@ if (require.main === module) {
       process.exit(1);
     });
 }
+
+app.use(async (req, res, next) => {
+  await initPromise;
+  next();
+});
 
 app.use('/api/stores', require('./routes/stores'));
 app.use('/api/tasks', require('./routes/tasks'));
