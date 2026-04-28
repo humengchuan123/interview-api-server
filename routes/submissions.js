@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 
-router.post('/', (req, res, next) => {
+router.post('/', async (req, res, next) => {
   try {
     const db = req.app.locals.db;
     const { task_id, actual_count } = req.body;
@@ -9,7 +9,7 @@ router.post('/', (req, res, next) => {
       return res.status(400).json({ code: 'VALIDATION_ERROR', message: 'task_id 和 actual_count 为必填项' });
     }
 
-    const task = db.prepare('SELECT required_count, store_id FROM tasks WHERE id = ?').get(task_id);
+    const task = await db.get('SELECT required_count, store_id FROM tasks WHERE id = ?', [task_id]);
     if (!task) {
       return res.status(404).json({ code: 'NOT_FOUND', message: '任务不存在' });
     }
@@ -17,14 +17,13 @@ router.post('/', (req, res, next) => {
     const result = actual_count < task.required_count ? 'failed' : 'passed';
     const id = 'sub-' + Date.now();
 
-    db.prepare('INSERT INTO submissions (id, task_id, actual_count, result) VALUES (?, ?, ?, ?)')
-      .run(id, task_id, actual_count, result);
+    await db.run('INSERT INTO submissions (id, task_id, actual_count, result) VALUES (?, ?, ?, ?)', [id, task_id, actual_count, result]);
 
     if (result === 'passed') {
-      db.prepare('UPDATE tasks SET status = ? WHERE id = ?').run('completed', task_id);
+      await db.run('UPDATE tasks SET status = ? WHERE id = ?', ['completed', task_id]);
     }
 
-    const submission = db.prepare('SELECT * FROM submissions WHERE id = ?').get(id);
+    const submission = await db.get('SELECT * FROM submissions WHERE id = ?', [id]);
 
     res.status(201).json({
       ...submission,
@@ -42,14 +41,14 @@ router.post('/', (req, res, next) => {
   }
 });
 
-router.get('/', (req, res, next) => {
+router.get('/', async (req, res, next) => {
   try {
     const db = req.app.locals.db;
     const { taskId } = req.query;
 
     let rows;
     if (taskId) {
-      rows = db.prepare(`
+      rows = await db.all(`
         SELECT sub.*, t.name as task_name, t.required_count, t.store_id,
                s.name as store_name, s.code as store_code
         FROM submissions sub
@@ -57,16 +56,16 @@ router.get('/', (req, res, next) => {
         LEFT JOIN stores s ON t.store_id = s.id
         WHERE sub.task_id = ?
         ORDER BY sub.submitted_at DESC
-      `).all(taskId);
+      `, [taskId]);
     } else {
-      rows = db.prepare(`
+      rows = await db.all(`
         SELECT sub.*, t.name as task_name, t.required_count, t.store_id,
                s.name as store_name, s.code as store_code
         FROM submissions sub
         LEFT JOIN tasks t ON sub.task_id = t.id
         LEFT JOIN stores s ON t.store_id = s.id
         ORDER BY sub.submitted_at DESC
-      `).all();
+      `);
     }
 
     res.json(rows.map(r => ({
