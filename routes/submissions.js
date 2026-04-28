@@ -1,15 +1,16 @@
 const express = require('express');
 const router = express.Router();
+const Submission = require('../models/Submission');
+const Task = require('../models/Task');
+const Store = require('../models/Store');
 
 router.post('/', async (req, res, next) => {
   try {
-    const db = req.app.locals.db;
     const { task_id, actual_count } = req.body;
     if (!task_id || actual_count === undefined || actual_count === null) {
       return res.status(400).json({ code: 'VALIDATION_ERROR', message: 'task_id 和 actual_count 为必填项' });
     }
-
-    const task = await db.get('SELECT required_count, store_id FROM tasks WHERE id = ?', [task_id]);
+    const task = await Task.findOne({ id: task_id });
     if (!task) {
       return res.status(404).json({ code: 'NOT_FOUND', message: '任务不存在' });
     }
@@ -17,16 +18,14 @@ router.post('/', async (req, res, next) => {
     const result = actual_count < task.required_count ? 'failed' : 'passed';
     const id = 'sub-' + Date.now();
 
-    await db.run('INSERT INTO submissions (id, task_id, actual_count, result) VALUES (?, ?, ?, ?)', [id, task_id, actual_count, result]);
+    const submission = await Submission.create({ id, task_id, actual_count, result });
 
     if (result === 'passed') {
-      await db.run('UPDATE tasks SET status = ? WHERE id = ?', ['completed', task_id]);
+      await Task.updateOne({ id: task_id }, { status: 'completed' });
     }
 
-    const submission = await db.get('SELECT * FROM submissions WHERE id = ?', [id]);
-
     res.status(201).json({
-      ...submission,
+      ...submission.toObject(),
       validation: {
         required_count: task.required_count,
         actual_count,
@@ -43,39 +42,37 @@ router.post('/', async (req, res, next) => {
 
 router.get('/', async (req, res, next) => {
   try {
-    const db = req.app.locals.db;
     const { taskId } = req.query;
-
-    let rows;
+    let submissions;
     if (taskId) {
-      rows = await db.all(`
-        SELECT sub.*, t.name as task_name, t.required_count, t.store_id,
-               s.name as store_name, s.code as store_code
-        FROM submissions sub
-        LEFT JOIN tasks t ON sub.task_id = t.id
-        LEFT JOIN stores s ON t.store_id = s.id
-        WHERE sub.task_id = ?
-        ORDER BY sub.submitted_at DESC
-      `, [taskId]);
+      submissions = await Submission.find({ task_id: taskId }).sort({ submitted_at: -1 }).lean();
     } else {
-      rows = await db.all(`
-        SELECT sub.*, t.name as task_name, t.required_count, t.store_id,
-               s.name as store_name, s.code as store_code
-        FROM submissions sub
-        LEFT JOIN tasks t ON sub.task_id = t.id
-        LEFT JOIN stores s ON t.store_id = s.id
-        ORDER BY sub.submitted_at DESC
-      `);
+      submissions = await Submission.find().sort({ submitted_at: -1 }).lean();
     }
 
-    res.json(rows.map(r => ({
+    const taskIds = [...new Set(submissions.map(s => s.task_id))];
+    const tasks = await Task.find({ id: { $in: taskIds } }).lean();
+    const storeIds = [...new Set(tasks.map(t => t.store_id))];
+    const stores = await Store.find({ id: { $in: storeIds } }).lean();
+
+    const taskMap = {};
+    for (const t of tasks) taskMap[t.id] = t;
+    const storeMap = {};
+    for (const s of stores) storeMap[s.id] = s;
+
+    res.json(submissions.map(r => ({
       ...r,
+      task_name: taskMap[r.task_id]?.name,
+      required_count: taskMap[r.task_id]?.required_count,
+      store_id: taskMap[r.task_id]?.store_id,
+      store_name: storeMap[taskMap[r.task_id]?.store_id]?.name,
+      store_code: storeMap[taskMap[r.task_id]?.store_id]?.code,
       tasks: {
         id: r.task_id,
-        name: r.task_name,
-        required_count: r.required_count,
-        store_id: r.store_id,
-        stores: { id: r.store_id, name: r.store_name, code: r.store_code },
+        name: taskMap[r.task_id]?.name,
+        required_count: taskMap[r.task_id]?.required_count,
+        store_id: taskMap[r.task_id]?.store_id,
+        stores: { id: taskMap[r.task_id]?.store_id, name: storeMap[taskMap[r.task_id]?.store_id]?.name, code: storeMap[taskMap[r.task_id]?.store_id]?.code },
       },
     })));
   } catch (err) {

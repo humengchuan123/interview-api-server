@@ -1,7 +1,7 @@
 {
   "name": "server",
   "version": "1.0.0",
-  "description": "门店陈列巡检任务系统 - 后端API",
+  "description": "\u95e8\u5e97\u9648\u5217\u5de1\u68c0\u4efb\u52a1\u7cfb\u7edf - \u540e\u7aefAPI",
   "main": "index.js",
   "scripts": {
     "dev": "node index.js",
@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "express": "^4.18.2",
-    "@supabase/supabase-js": "^2.45.0",
+    "mongoose": "^8.6.0",
     "better-sqlite3": "^11.0.0",
     "cors": "^2.8.5"
   }
