@@ -1,72 +1,44 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-const { SqliteAdapter, PostgresAdapter } = require('./db');
+const { SqliteAdapter, SupabaseAdapter } = require('./db');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const isPostgres = !!process.env.DATABASE_URL;
+const isSupabase = !!(process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY);
 
 async function initDB() {
-  if (isPostgres) {
-    const { Pool } = require('pg');
-    const pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: { rejectUnauthorized: false },
-    });
+  if (isSupabase) {
+    const { createClient } = require('@supabase/supabase-js');
+    const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+    const adapter = new SupabaseAdapter(supabase);
+    app.locals.db = adapter;
 
-    pool.on('error', (err) => {
-      console.error('❌ Unexpected pool error:', err.message);
-    });
-
-    const client = await pool.connect();
-    try {
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS stores (
-          id TEXT PRIMARY KEY, name TEXT NOT NULL, code TEXT NOT NULL UNIQUE,
-          address TEXT, created_at TIMESTAMPTZ DEFAULT NOW()
-        )
-      `);
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS tasks (
-          id TEXT PRIMARY KEY, name TEXT NOT NULL, required_count INTEGER NOT NULL,
-          store_id TEXT NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
-          status TEXT NOT NULL DEFAULT 'pending', created_at TIMESTAMPTZ DEFAULT NOW()
-        )
-      `);
- await client.query(`
-        CREATE TABLE IF NOT EXISTS submissions (
-          id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-          actual_count INTEGER NOT NULL, result TEXT NOT NULL,
-          submitted_at TIMESTAMPTZ DEFAULT NOW()
-        )
-      `);
-
-      const { rows } = await client.query('SELECT COUNT(*)::int as count FROM stores');
-      if (rows[0].count === 0) {
-        await client.query(`
-          INSERT INTO stores (id, name, code, address) VALUES
-            ('store-1', '北京朝阳店', 'BJ-CY-001', '北京市朝阳区建国路88号'),
-            ('store-2', '上海浦东店', 'SH-PD-001', '上海市浦东新区陆家嘴环路100号'),
-            ('store-3', '广州天河店', 'GZ-TH-001', '广州市天河区体育西路50号'),
-            ('store-4', '深圳南山店', 'SZ-NS-001', '深圳市南山区科技园路20号')
-        `);
-      }
-    } finally {
-      client.release();
+    const { count, error: countErr } = await supabase.from('stores').select('*', { count: 'exact', head: true });
+    if (countErr || count === 0) {
+      const { error: insertErr } = await supabase.from('stores').insert([
+        { id: 'store-1', name: '北京朝阳店', code: 'BJ-CY-001', address: '北京市朝阳区建国路88号' },
+        { id: 'store-2', name: '上海浦东店', code: 'SH-PD-001', address: '上海市浦东新区陆家嘴环路100号' },
+        { id: 'store-3', name: '广州天河店', code: 'GZ-TH-001', address: '广州市天河区体育西路50号' },
+        { id: 'store-4', name: '深圳南山店', code: 'SZ-NS-001', address: '深圳市南山区科技园路20号' },
+      ]);
+      if (insertErr && insertErr.code !== '23505') console.error('Seed error:', insertErr.message);
     }
 
-    const adapter = new PostgresAdapter(pool);
-    app.locals.db = adapter;
-    console.log('✅ Supabase Postgres connected');
+    const { error: tableCheck } = await supabase.from('tasks').select('id', { count: 'exact', head: true });
+    if (tableCheck && tableCheck.code === '42P01') {
+      throw new Error('Table "tasks" not found. Please create tables first in Supabase SQL Editor.');
+    }
   } else {
     const Database = require('better-sqlite3');
     const dbPath = path.join(__dirname, 'data.db');
     const db = new Database(dbPath);
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
+    const adapter = new SqliteAdapter(db);
+    app.locals.db = adapter;
 
     db.exec(`
       CREATE TABLE IF NOT EXISTS stores (
@@ -96,10 +68,6 @@ async function initDB() {
         ['store-4', '深圳南山店', 'SZ-NS-001', '深圳市南山区科技园路20号'],
       ]);
     }
-
-    const adapter = new SqliteAdapter(db);
-    app.locals.db = adapter;
-    console.log('✅ SQLite connected');
   }
 }
 
@@ -121,7 +89,7 @@ app.use(async (req, res, next) => {
         code: 'DB_INIT_FAILED',
         message: '数据库初始化失败',
         detail: dbError.message,
-        env: isPostgres ? 'DATABASE_URL is set' : 'DATABASE_URL is NOT set',
+        env: isSupabase ? 'SUPABASE configured' : 'Using SQLite (local)',
       });
     }
   }
@@ -134,14 +102,14 @@ app.use('/api/submissions', require('./routes/submissions'));
 
 app.get('/health', async (req, res) => {
   try {
-    const result = await req.app.locals.db.get('SELECT 1 as ok');
-    res.json({ status: 'ok', timestamp: new Date().toISOString(), db: isPostgres ? 'supabase' : 'sqlite' });
+    await req.app.locals.db.get('SELECT 1 as ok');
+    res.json({ status: 'ok', timestamp: new Date().toISOString(), db: isSupabase ? 'supabase' : 'sqlite' });
   } catch (err) {
     res.status(503).json({
       status: 'error',
       message: 'Database not connected',
       detail: err.message,
-      env: isPostgres ? 'DATABASE_URL is set' : 'DATABASE_URL is NOT set',
+      env: isSupabase ? 'SUPABASE configured' : 'Using SQLite (local)',
     });
   }
 });
@@ -169,7 +137,7 @@ if (require.main === module) {
       dbReady = true;
       app.listen(PORT, () => {
         console.log(`✅ Server running on http://localhost:${PORT}`);
-        console.log(`📦 Database: ${isPostgres ? '🐘 Supabase Postgres' : '💾 SQLite (local)'}`);
+        console.log(`📦 Database: ${isSupabase ? '☁️ Supabase (REST API)' : '💾 SQLite (local)'}`);
       });
     })
     .catch((err) => {
