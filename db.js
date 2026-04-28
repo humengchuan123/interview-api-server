@@ -18,29 +18,29 @@ class SqliteAdapter {
 }
 
 class PostgresAdapter {
-  constructor(sql) {
-    this.sql = sql;
+  constructor(pool) {
+    this.pool = pool;
     this.type = 'postgres';
   }
 
   async all(query, params = []) {
     let i = 0;
-    const tagged = query.replace(/\?/g, () => `$${++i}`);
-    const { rows } = await this.sql.query(tagged, params);
+    const pgQuery = query.replace(/\?/g, () => `$${++i}`);
+    const { rows } = await this.pool.query(pgQuery, params);
     return rows;
   }
 
   async get(query, params = []) {
     let i = 0;
-    const tagged = query.replace(/\?/g, () => `$${++i}`);
-    const { rows } = await this.sql.query(tagged, params);
+    const pgQuery = query.replace(/\?/g, () => `$${++i}`);
+    const { rows } = await this.pool.query(pgQuery, params);
     return rows[0] || null;
   }
 
   async run(query, params = []) {
     let i = 0;
-    const tagged = query.replace(/\?/g, () => `$${++i}`);
-    return this.sql.query(tagged, params);
+    const pgQuery = query.replace(/\?/g, () => `$${++i}`);
+    return this.pool.query(pgQuery, params);
   }
 }
 

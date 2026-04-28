@@ -11,8 +11,9 @@ const isPostgres = !!process.env.POSTGRES_URL;
 
 async function initDB() {
   if (isPostgres) {
-    const { sql } = require('@vercel/postgres');
-    const adapter = new PostgresAdapter(sql);
+    const { sql, Pool } = require('@vercel/postgres');
+    const pool = new Pool();
+    const adapter = new PostgresAdapter(pool);
     app.locals.db = adapter;
 
     await sql`CREATE TABLE IF NOT EXISTS stores (
